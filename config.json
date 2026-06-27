@@ -1,5 +1,5 @@
 {
-  "listen": ":8080",
+  "listen": ":8443",
   "tls": {
     "cert": "/app/server.crt",
     "key": "/app/server.key"
