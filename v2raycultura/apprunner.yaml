@@ -1,0 +1,4 @@
+runtime: custom
+run: 
+  port: 8080
+  command: /app/hysteria server -c /app/config.json
