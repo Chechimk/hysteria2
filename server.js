@@ -152,10 +152,17 @@ app.get('/api/settings', auth, async (req, res) => {
   try {
     const doc = await settingsDoc.get();
     const d = doc.exists ? doc.data() : {};
+    const hostUrls = d.hostUrls || [];
+    // Auto-detect current Cloud Run URL and include it
+    const currentHost = req.headers['x-forwarded-host'] || req.headers.host || '';
+    if (currentHost && !hostUrls.includes(currentHost)) {
+      hostUrls.unshift(currentHost);
+      await settingsDoc.set({ hostUrls }, { merge: true });
+    }
     res.json({
       cdnAddress: d.cdnAddress || 'm.googleapis.com',
       sniList: d.sniList || ['workspaceblog.google.com'],
-      hostUrls: d.hostUrls || []
+      hostUrls
     });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
