@@ -97,8 +97,9 @@ app.put('/api/settings', auth, async (req, res) => {
 // --- Users ---
 app.get('/api/users', auth, async (req, res) => {
   try {
-    const snap = await usersCol.where('assigned', '==', true).orderBy('createdAt', 'desc').get();
-    const users = snap.docs.map(d => ({ id: d.id, ...d.data() }));
+    const snap = await usersCol.get();
+    const users = snap.docs.filter(d => d.data().assigned).map(d => ({ id: d.id, ...d.data() }));
+    users.sort((a, b) => (b.createdAt || '').localeCompare(a.createdAt || ''));
     res.json({ users, total: UUID_POOL.length, available: UUID_POOL.length - users.length });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -107,8 +108,10 @@ app.post('/api/users', auth, async (req, res) => {
   try {
     const name = (req.body.name || '').trim();
     if (!name) return res.status(400).json({ error: 'Name is required' });
-    const snap = await usersCol.where('assigned', '==', true).get();
-    const used = new Set(snap.docs.map(d => d.id));
+    // Get all docs to check which UUIDs are already assigned
+    const snap = await usersCol.get();
+    const used = new Set();
+    snap.docs.forEach(d => { if (d.data().assigned) used.add(d.id); });
     const uuid = UUID_POOL.find(u => !used.has(u));
     if (!uuid) return res.status(400).json({ error: 'No available slots (all 30 used)' });
     const user = { uuid, name, assigned: true, active: true, createdAt: new Date().toISOString() };
