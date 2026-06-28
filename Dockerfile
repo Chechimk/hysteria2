@@ -12,8 +12,9 @@ COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
 COPY nginx.conf /etc/nginx/http.d/default.conf
+RUN rm -f /etc/nginx/http.d/alpine-default.conf
 
-RUN printf '#!/bin/sh\nnginx\nexec node /app/server.js\n' > /app/start.sh && chmod +x /app/start.sh
+RUN printf '#!/bin/sh\nnginx -g "daemon on;" 2>&1\nsleep 1\nexec node /app/server.js\n' > /app/start.sh && chmod +x /app/start.sh
 
 EXPOSE 8080
 ENTRYPOINT ["/app/start.sh"]

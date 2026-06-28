@@ -236,8 +236,8 @@ async function init() {
     }
   } catch (e) { console.error('Seed error:', e.message); }
 
-  await restartXray();
   app.listen(PORT, () => console.log(`Admin panel on :${PORT}`));
+  try { await restartXray(); } catch (e) { console.error('Initial Xray start failed:', e.message); }
 }
 
 init();
