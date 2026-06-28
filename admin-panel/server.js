@@ -17,6 +17,7 @@ const GRPC_SERVICE = process.env.GRPC_SERVICE || 'vlessgrpc';
 
 const db = new Firestore();
 const usersCol = db.collection('xray-users');
+const settingsDoc = db.collection('xray-settings').doc('main');
 
 // --- Auth ---
 function tokenHash() {
@@ -41,9 +42,27 @@ app.post('/api/logout', (req, res) => {
   res.json({ ok: true });
 });
 
-// --- Settings ---
-app.get('/api/settings', auth, (req, res) => {
-  res.json({ xrayHost: XRAY_HOST, grpcService: GRPC_SERVICE });
+// --- Settings (stored in Firestore) ---
+app.get('/api/settings', auth, async (req, res) => {
+  try {
+    const doc = await settingsDoc.get();
+    const data = doc.exists ? doc.data() : {};
+    res.json({
+      xrayHost: data.xrayHost || XRAY_HOST,
+      grpcService: data.grpcService || GRPC_SERVICE
+    });
+  } catch (e) { res.status(500).json({ error: e.message }); }
+});
+
+app.put('/api/settings', auth, async (req, res) => {
+  try {
+    const { xrayHost, grpcService } = req.body;
+    const updates = {};
+    if (xrayHost !== undefined) updates.xrayHost = xrayHost.trim();
+    if (grpcService !== undefined) updates.grpcService = grpcService.trim();
+    await settingsDoc.set(updates, { merge: true });
+    res.json({ ok: true });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // --- Users CRUD ---
@@ -94,12 +113,15 @@ app.get('/api/config', auth, async (req, res) => {
   try {
     const snap = await usersCol.where('active', '==', true).get();
     const clients = snap.docs.map(d => ({ id: d.data().uuid }));
+    const sDoc = await settingsDoc.get();
+    const sData = sDoc.exists ? sDoc.data() : {};
+    const svcName = sData.grpcService || GRPC_SERVICE;
     res.json({
       log: { loglevel: 'warning' },
       inbounds: [{
         port: 8080, protocol: 'vless',
         settings: { clients, decryption: 'none' },
-        streamSettings: { network: 'grpc', grpcSettings: { serviceName: GRPC_SERVICE } }
+        streamSettings: { network: 'grpc', grpcSettings: { serviceName: svcName } }
       }],
       outbounds: [{ protocol: 'freedom' }]
     });

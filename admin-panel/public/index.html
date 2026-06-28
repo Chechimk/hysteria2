@@ -107,6 +107,23 @@ tr:hover td{background:rgba(99,102,241,.04)}
   <div class="toolbar">
     <button class="btn btn-primary" onclick="showAddModal()">+ Add User</button>
     <button class="btn btn-ghost" onclick="loadUsers()">↻ Refresh</button>
+    <button class="btn btn-ghost" onclick="toggleSettings()">⚙ Settings</button>
+  </div>
+
+  <!-- SETTINGS PANEL -->
+  <div class="table-wrap" id="settingsPanel" style="display:none;margin-bottom:20px;padding:20px">
+    <h3 style="margin-bottom:16px;font-size:16px">⚙ Server Settings</h3>
+    <div style="display:grid;grid-template-columns:1fr 1fr;gap:12px;max-width:600px">
+      <div>
+        <label style="display:block;font-size:13px;color:var(--text2);margin-bottom:6px">Xray Host (Cloud Run URL)</label>
+        <input type="text" id="settingsHost" placeholder="your-service.run.app" style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none">
+      </div>
+      <div>
+        <label style="display:block;font-size:13px;color:var(--text2);margin-bottom:6px">gRPC Service Name</label>
+        <input type="text" id="settingsGrpc" placeholder="vlessgrpc" style="width:100%;padding:10px 14px;background:var(--bg);border:1px solid var(--border);border-radius:8px;color:var(--text);font-size:14px;outline:none">
+      </div>
+    </div>
+    <button class="btn btn-primary" style="margin-top:14px" onclick="saveSettings()">Save Settings</button>
   </div>
 
   <div class="table-wrap">
@@ -174,8 +191,24 @@ async function init() {
     settings = await sRes.json();
     document.getElementById('loginPage').style.display='none';
     document.getElementById('dashboard').style.display='block';
+    document.getElementById('settingsHost').value = settings.xrayHost || '';
+    document.getElementById('settingsGrpc').value = settings.grpcService || 'vlessgrpc';
     loadUsers();
   } catch(e) {}
+}
+
+// --- Settings ---
+function toggleSettings() {
+  const p = document.getElementById('settingsPanel');
+  p.style.display = p.style.display === 'none' ? 'block' : 'none';
+}
+
+async function saveSettings() {
+  const xrayHost = document.getElementById('settingsHost').value.trim();
+  const grpcService = document.getElementById('settingsGrpc').value.trim();
+  const res = await fetch('/api/settings', {method:'PUT', headers:{'Content-Type':'application/json'}, body:JSON.stringify({xrayHost, grpcService})});
+  if (res.ok) { settings.xrayHost = xrayHost; settings.grpcService = grpcService; toast('Settings saved'); }
+  else toast('Failed to save settings', true);
 }
 
 // --- Users ---
