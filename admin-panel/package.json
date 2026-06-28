@@ -1,0 +1,14 @@
+{
+  "name": "xray-admin-panel",
+  "version": "1.0.0",
+  "main": "server.js",
+  "scripts": {
+    "start": "node server.js"
+  },
+  "dependencies": {
+    "express": "^4.21.0",
+    "@google-cloud/firestore": "^7.10.0",
+    "uuid": "^10.0.0",
+    "cookie-parser": "^1.4.6"
+  }
+}
