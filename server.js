@@ -208,6 +208,7 @@ app.patch('/api/users/:id', auth, async (req, res) => {
     const u = {};
     if (req.body.active !== undefined) u.active = req.body.active;
     if (req.body.links !== undefined) u.links = req.body.links;
+    if (req.body.name !== undefined) u.owner = req.body.name;
     await usersCol.doc(req.params.id).update(u);
     if (req.body.active !== undefined) await restartXray();
     res.json({ ok: true });

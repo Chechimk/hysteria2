@@ -197,6 +197,20 @@ th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--accent
 </div>
 </div>
 
+<!-- EDIT USER MODAL -->
+<div class="mo" id="editMo">
+<div class="mc">
+  <h2 id="editTitle">Edit User</h2>
+  <label>Owner Name</label>
+  <input type="text" id="eOwner">
+  <div id="eLinks" style="margin-top:14px"></div>
+  <div class="mc-foot">
+    <button class="btn btn-g" onclick="closeMo('editMo')">Cancel</button>
+    <button class="btn btn-p" onclick="saveEdit()">Save Changes</button>
+  </div>
+</div>
+</div>
+
 <div class="toast" id="toast"></div>
 
 <script>
@@ -325,8 +339,7 @@ function renderUsers(){
       <td class="traf"><span class="up tup">${fmtBytes(t.up)}</span></td>
       <td class="traf"><span class="dn tdn">${fmtBytes(t.down)}</span></td>
       <td><div class="acts">
-        ${u.active?`<button class="btn btn-c btn-sm" onclick="showLinks('${u.uuid}')">📋 Links</button>`:''}
-        <button class="btn ${u.active?'btn-g':'btn-s'} btn-sm" onclick="toggle('${u.uuid}',${!u.active})">${u.active?'Disable':'Enable'}</button>
+        ${u.active?`<button class="btn btn-c btn-sm" onclick="showLinks('${u.uuid}')">📋 Links</button>`:''}        <button class="btn btn-g btn-sm" onclick="showEdit('${u.uuid}')">✏ Edit</button>        <button class="btn ${u.active?'btn-g':'btn-s'} btn-sm" onclick="toggle('${u.uuid}',${!u.active})">${u.active?'Disable':'Enable'}</button>
         <button class="btn btn-d btn-sm" onclick="del('${u.uuid}','${esc(u.owner||u.name||'')}')">Delete</button>
       </div></td>
     </tr>`}).join('');
@@ -431,6 +444,43 @@ function copyAll(){
   const cdn=settings.cdnAddress||'m.googleapis.com';
   const links=(viewUser.links||[]).map(l=>`vless://${viewUser.uuid}@${cdn}:443?path=%2F${viewUser.uuid}&security=tls&encryption=none&host=${host}&type=ws&sni=${l.sni}#${encodeURIComponent(l.name)}`);
   navigator.clipboard.writeText(links.join('\n')).then(()=>toast('All '+links.length+' links copied!'));
+}
+
+// EDIT USER
+let editUser=null;
+function showEdit(uuid){
+  editUser=users.find(u=>u.uuid===uuid);
+  if(!editUser)return;
+  $('editTitle').textContent='Edit: '+(editUser.owner||editUser.name||'');
+  $('eOwner').value=editUser.owner||editUser.name||'';
+  const sniList=settings.sniList||[];
+  const links=editUser.links||[];
+  $('eLinks').innerHTML=links.map((l,i)=>{
+    return`<div style="margin-bottom:10px;padding:10px;background:var(--bg);border:1px solid var(--border);border-radius:8px">
+      <label style="margin-top:0">Link ${i+1} Name</label>
+      <input type="text" class="e-lname" value="${esc(l.name)}">
+      <label>SNI</label>
+      <select class="e-lsni">
+        ${sniList.map(s=>`<option value="${esc(s)}"${s===l.sni?' selected':''}>${esc(s)}</option>`).join('')}
+      </select>
+    </div>`;
+  }).join('');
+  $('editMo').classList.add('show');
+}
+async function saveEdit(){
+  if(!editUser)return;
+  const names=document.querySelectorAll('.e-lname');
+  const snis=document.querySelectorAll('.e-lsni');
+  const links=[];
+  names.forEach((el,i)=>{
+    links.push({name:el.value.trim()||('link'+(i+1)), sni:snis[i].value});
+  });
+  const owner=$('eOwner').value.trim();
+  const body={links};
+  if(owner&&owner!==(editUser.owner||editUser.name))body.name=owner;
+  const r=await fetch('/api/users/'+editUser.uuid,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify(body)});
+  if(r.ok){closeMo('editMo');loadUsers();toast('User updated');}
+  else toast('Failed to update',true);
 }
 
 // TOGGLE & DELETE
