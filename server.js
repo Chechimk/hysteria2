@@ -289,7 +289,12 @@ async function init() {
       onlineUsers.add(uuid);
       const cleanup = () => {
         connRef[uuid] = (connRef[uuid] || 1) - 1;
-        if (connRef[uuid] <= 0) { delete connRef[uuid]; onlineUsers.delete(uuid); }
+        if (connRef[uuid] <= 0) {
+          delete connRef[uuid];
+          onlineUsers.delete(uuid);
+          // Reset live session traffic when user fully disconnects
+          delete liveTraffic[uuid];
+        }
       };
       socket.on('close', cleanup);
       socket.on('error', cleanup);

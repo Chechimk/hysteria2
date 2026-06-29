@@ -67,6 +67,7 @@ tr:hover td{background:rgba(99,102,241,.03)}
 .empty{text-align:center;padding:40px;color:var(--text3);font-size:13px}
 .traf{font-family:'Cascadia Code',Consolas,monospace;font-size:10px;line-height:1.6}
 .traf .up{color:var(--green)}.traf .dn{color:var(--cyan)}
+th.sortable{cursor:pointer;user-select:none}th.sortable:hover{color:var(--accent)}th .arrow{font-size:8px;margin-left:3px;opacity:.5}th.active .arrow{opacity:1;color:var(--accent)}
 .mo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px)}
 .mo.show{display:flex}
 .mc{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto}
@@ -148,7 +149,15 @@ tr:hover td{background:rgba(99,102,241,.03)}
 
 <div class="tw">
   <table>
-    <thead><tr><th>Owner</th><th>Links</th><th>Status</th><th>Online</th><th>↑ Upload</th><th>↓ Download</th><th>Actions</th></tr></thead>
+    <thead><tr>
+      <th class="sortable" onclick="sortBy('name')">Owner<span class="arrow" id="sa_name"></span></th>
+      <th>Links</th>
+      <th>Status</th>
+      <th class="sortable" onclick="sortBy('online')">Online<span class="arrow" id="sa_online"></span></th>
+      <th class="sortable" onclick="sortBy('up')">↑ Upload<span class="arrow" id="sa_up"></span></th>
+      <th class="sortable" onclick="sortBy('down')">↓ Download<span class="arrow" id="sa_down"></span></th>
+      <th>Actions</th>
+    </tr></thead>
     <tbody id="tbl"></tbody>
   </table>
 </div>
@@ -195,6 +204,7 @@ let users=[],settings={},onlineSet=new Set(),poll;
 let trafficData={};
 let currentPeriod='live';
 let viewUser=null;
+let sortField='name',sortDir=1;
 
 // AUTH
 async function login(){
@@ -272,6 +282,26 @@ async function saveSettings(){
 }
 function toggleSettings(){const p=$('setPanel');p.style.display=p.style.display==='none'?'block':'none';}
 
+// SORT
+function sortBy(field){
+  if(sortField===field)sortDir*=-1;else{sortField=field;sortDir=1;}
+  document.querySelectorAll('th .arrow').forEach(a=>{a.textContent='';a.parentElement.classList.remove('active');});
+  const el=$('sa_'+field);if(el){el.textContent=sortDir>0?' ▲':' ▼';el.parentElement.classList.add('active');}
+  renderUsers();
+}
+function getSorted(){
+  return users.slice().sort((a,b)=>{
+    let va,vb;
+    switch(sortField){
+      case 'name':va=(a.owner||a.name||'').toLowerCase();vb=(b.owner||b.name||'').toLowerCase();return va<vb?-sortDir:va>vb?sortDir:0;
+      case 'online':va=onlineSet.has(a.uuid)?1:0;vb=onlineSet.has(b.uuid)?1:0;return (vb-va)*sortDir;
+      case 'up':va=(trafficData[a.uuid]||{}).up||0;vb=(trafficData[b.uuid]||{}).up||0;return (vb-va)*sortDir;
+      case 'down':va=(trafficData[a.uuid]||{}).down||0;vb=(trafficData[b.uuid]||{}).down||0;return (vb-va)*sortDir;
+      default:return 0;
+    }
+  });
+}
+
 // USERS TABLE
 async function loadUsers(){
   const r=await fetch('/api/users');if(!r.ok)return;
@@ -282,7 +312,8 @@ async function loadUsers(){
 }
 function renderUsers(){
   if(!users.length){$('tbl').innerHTML='<tr><td colspan="7" class="empty">No users yet. Click "+ New User" to create one.</td></tr>';return;}
-  $('tbl').innerHTML=users.map(u=>{
+  const sorted=getSorted();
+  $('tbl').innerHTML=sorted.map(u=>{
     const on=onlineSet.has(u.uuid);
     const t=trafficData[u.uuid]||{up:0,down:0};
     const linkNames=(u.links||[]).map(l=>l.name).join(', ');
