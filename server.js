@@ -134,6 +134,7 @@ function auth(req, res, next) {
   res.status(401).json({ error: 'Unauthorized' });
 }
 
+app.get('/', (req, res) => res.redirect('/admin'));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
 
 app.post('/api/login', (req, res) => {
