@@ -28,13 +28,9 @@ let xrayProcess = null;
 let restarting = false;
 let statsClient = null;
 
-// Online tracking
 const onlineUsers = new Set();
 const connRef = {};
-
-// Live traffic since container start: uuid -> {up, down}
 const liveTraffic = {};
-// Buffer for periodic Firestore flush
 const trafficBuffer = {};
 
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:10000', ws: true });
@@ -179,6 +175,7 @@ app.put('/api/settings', auth, async (req, res) => {
 
 // ═══════════════════════════════════════
 // USERS CRUD
+// User model: { uuid, owner, baseName, links: [{name, sni}], assigned, active, createdAt }
 // ═══════════════════════════════════════
 
 app.get('/api/users', auth, async (req, res) => {
@@ -192,10 +189,14 @@ app.get('/api/users', auth, async (req, res) => {
 
 app.post('/api/users', auth, async (req, res) => {
   try {
-    const name = (req.body.name || '').trim();
-    if (!name) return res.status(400).json({ error: 'Name is required' });
+    const owner = (req.body.owner || '').trim();
+    const baseName = (req.body.baseName || '').trim();
+    const links = req.body.links || []; // [{name, sni}]
+    if (!owner) return res.status(400).json({ error: 'Owner name is required' });
+    if (!baseName) return res.status(400).json({ error: 'Base name is required' });
+    if (!links.length) return res.status(400).json({ error: 'At least one link is required' });
     const uuid = crypto.randomUUID();
-    const user = { uuid, name, assigned: true, active: true, createdAt: new Date().toISOString() };
+    const user = { uuid, owner, baseName, links, assigned: true, active: true, createdAt: new Date().toISOString() };
     await usersCol.doc(uuid).set(user);
     await restartXray();
     res.json(user);
@@ -206,9 +207,9 @@ app.patch('/api/users/:id', auth, async (req, res) => {
   try {
     const u = {};
     if (req.body.active !== undefined) u.active = req.body.active;
-    if (req.body.name !== undefined) u.name = req.body.name;
+    if (req.body.links !== undefined) u.links = req.body.links;
     await usersCol.doc(req.params.id).update(u);
-    await restartXray();
+    if (req.body.active !== undefined) await restartXray();
     res.json({ ok: true });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
@@ -301,7 +302,6 @@ async function init() {
   server.listen(PORT, () => console.log(`Server on :${PORT}`));
   try { await restartXray(); } catch (e) { console.error('Initial Xray start failed:', e.message); }
 
-  // Poll traffic every 5 seconds, flush to Firestore every 60 seconds
   setInterval(pollTraffic, 5000);
   setInterval(flushTraffic, 60000);
 }

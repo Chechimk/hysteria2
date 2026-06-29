@@ -69,10 +69,16 @@ tr:hover td{background:rgba(99,102,241,.03)}
 .traf .up{color:var(--green)}.traf .dn{color:var(--cyan)}
 .mo{display:none;position:fixed;inset:0;background:rgba(0,0,0,.7);z-index:100;align-items:center;justify-content:center;padding:20px;backdrop-filter:blur(4px)}
 .mo.show{display:flex}
-.mc{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:480px;max-height:90vh;overflow-y:auto}
+.mc{background:var(--card);border:1px solid var(--border);border-radius:14px;padding:24px;width:100%;max-width:520px;max-height:90vh;overflow-y:auto}
 .mc h2{font-size:16px;margin-bottom:16px}
 .mc-foot{display:flex;gap:8px;justify-content:flex-end;margin-top:18px}
-.lbox{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;word-break:break-all;font-family:monospace;font-size:11px;color:var(--cyan);margin:10px 0;max-height:80px;overflow-y:auto;line-height:1.5}
+.lbox{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:12px;word-break:break-all;font-family:monospace;font-size:11px;color:var(--cyan);margin:8px 0;line-height:1.6}
+.link-row{display:flex;gap:8px;align-items:center;margin-bottom:8px}
+.link-row label{margin:0;min-width:50px}
+.link-row input,.link-row select{flex:1}
+.link-item{background:var(--bg);border:1px solid var(--border);border-radius:8px;padding:10px 14px;margin-bottom:8px}
+.link-item .lname{font-weight:600;font-size:12px;color:var(--accent);margin-bottom:4px}
+.link-item .lurl{font-family:monospace;font-size:10px;color:var(--cyan);word-break:break-all;line-height:1.5}
 .toast{position:fixed;bottom:24px;right:24px;padding:12px 20px;border-radius:8px;font-size:13px;font-weight:500;z-index:300;opacity:0;transform:translateY(10px);transition:all .3s;pointer-events:none}
 .toast.show{opacity:1;transform:translateY(0)}
 .toast.ok{background:var(--green);color:#fff}
@@ -142,39 +148,39 @@ tr:hover td{background:rgba(99,102,241,.03)}
 
 <div class="tw">
   <table>
-    <thead><tr><th>User</th><th>UUID</th><th>Status</th><th>Online</th><th>↑ Upload</th><th>↓ Download</th><th>Actions</th></tr></thead>
+    <thead><tr><th>Owner</th><th>Links</th><th>Status</th><th>Online</th><th>↑ Upload</th><th>↓ Download</th><th>Actions</th></tr></thead>
     <tbody id="tbl"></tbody>
   </table>
 </div>
 </div>
 
-<!-- ADD MODAL -->
+<!-- CREATE USER MODAL -->
 <div class="mo" id="addMo">
 <div class="mc">
   <h2>Create New User</h2>
-  <label>Display Name</label>
-  <input type="text" id="nName" placeholder="Enter name">
+  <label>Owner Name</label>
+  <input type="text" id="cOwner" placeholder="Who owns this account?">
+  <label>Base Link Name</label>
+  <input type="text" id="cBase" placeholder="e.g. pew (creates pew1, pew2, pew3, pew4)">
+  <label style="margin-top:16px">Assign SNI for each link:</label>
+  <div id="cLinks"></div>
   <div class="mc-foot">
     <button class="btn btn-g" onclick="closeMo('addMo')">Cancel</button>
-    <button class="btn btn-p" onclick="addUser()">Create</button>
+    <button class="btn btn-p" onclick="createUser()">Create</button>
   </div>
 </div>
 </div>
 
-<!-- LINK MODAL -->
+<!-- VIEW LINKS MODAL -->
 <div class="mo" id="linkMo">
 <div class="mc">
-  <h2>Import Link</h2>
-  <label>SNI Domain</label>
-  <select id="lSni" onchange="genLink()"></select>
+  <h2 id="linkTitle">Links</h2>
   <label>Host URL</label>
-  <select id="lHost" onchange="genLink()"></select>
-  <label>CDN Address</label>
-  <input type="text" id="lCdn" readonly style="color:var(--text3);cursor:default">
-  <div class="lbox" id="lBox"></div>
+  <select id="lHost" onchange="renderLinks()"></select>
+  <div id="linkList" style="margin-top:12px"></div>
   <div class="mc-foot">
     <button class="btn btn-g" onclick="closeMo('linkMo')">Close</button>
-    <button class="btn btn-c" onclick="copyLink()">📋 Copy Link</button>
+    <button class="btn btn-c" onclick="copyAll()">📋 Copy All Links</button>
   </div>
 </div>
 </div>
@@ -182,9 +188,10 @@ tr:hover td{background:rgba(99,102,241,.03)}
 <div class="toast" id="toast"></div>
 
 <script>
-let users=[],settings={},onlineSet=new Set(),linkU='',linkN='',poll;
-let trafficData={}; // uuid->{up,down}
+let users=[],settings={},onlineSet=new Set(),poll;
+let trafficData={};
 let currentPeriod='live';
+let viewUser=null;
 
 // AUTH
 async function login(){
@@ -194,7 +201,6 @@ async function login(){
 $('loginPass').addEventListener('keydown',e=>{if(e.key==='Enter')login()});
 async function logout(){await fetch('/api/logout',{method:'POST'});stopPoll();$('dash').style.display='none';$('loginPage').style.display='flex';$('loginPass').value='';}
 
-// INIT
 async function initDash(){
   const r=await fetch('/api/settings');
   if(r.status===401)return;
@@ -203,7 +209,7 @@ async function initDash(){
   renderSet();loadUsers();startPoll();
 }
 
-// POLL every 5 sec
+// POLL
 function startPoll(){stopPoll();pollStats();poll=setInterval(pollStats,5000);}
 function stopPoll(){if(poll)clearInterval(poll);}
 async function pollStats(){
@@ -215,15 +221,12 @@ async function pollStats(){
     updateTable();
   }catch(e){}
 }
-
 async function loadTraffic(){
   currentPeriod=$('tfPeriod').value;
   if(currentPeriod==='live'){pollStats();return;}
   try{
     const r=await fetch('/api/traffic?period='+currentPeriod);if(!r.ok)return;
-    const d=await r.json();
-    trafficData=d.traffic||{};
-    updateTable();
+    const d=await r.json();trafficData=d.traffic||{};updateTable();
   }catch(e){}
 }
 
@@ -266,7 +269,7 @@ async function saveSettings(){
 }
 function toggleSettings(){const p=$('setPanel');p.style.display=p.style.display==='none'?'block':'none';}
 
-// USERS
+// USERS TABLE
 async function loadUsers(){
   const r=await fetch('/api/users');if(!r.ok)return;
   const d=await r.json();users=d.users;
@@ -279,70 +282,113 @@ function renderUsers(){
   $('tbl').innerHTML=users.map(u=>{
     const on=onlineSet.has(u.uuid);
     const t=trafficData[u.uuid]||{up:0,down:0};
+    const linkNames=(u.links||[]).map(l=>l.name).join(', ');
     return`<tr data-uid="${u.uuid}">
-      <td><strong>${esc(u.name)}</strong></td>
-      <td><span class="uid">${u.uuid.slice(0,13)}...</span></td>
+      <td><strong>${esc(u.owner||u.name||'')}</strong></td>
+      <td><span class="uid">${esc(linkNames)||u.uuid.slice(0,13)+'...'}</span></td>
       <td><span class="badge ${u.active?'badge-on':'badge-off'}">${u.active?'Active':'Disabled'}</span></td>
       <td><span class="dot ${on?'dot-on':'dot-off'}"></span> <span class="otxt">${on?'Online':'Offline'}</span></td>
       <td class="traf"><span class="up tup">${fmtBytes(t.up)}</span></td>
       <td class="traf"><span class="dn tdn">${fmtBytes(t.down)}</span></td>
       <td><div class="acts">
-        ${u.active?`<button class="btn btn-c btn-sm" onclick="showLink('${u.uuid}','${esc(u.name)}')">📋 Link</button>`:''}
+        ${u.active?`<button class="btn btn-c btn-sm" onclick="showLinks('${u.uuid}')">📋 Links</button>`:''}
         <button class="btn ${u.active?'btn-g':'btn-s'} btn-sm" onclick="toggle('${u.uuid}',${!u.active})">${u.active?'Disable':'Enable'}</button>
-        <button class="btn btn-d btn-sm" onclick="del('${u.uuid}','${esc(u.name)}')">Delete</button>
+        <button class="btn btn-d btn-sm" onclick="del('${u.uuid}','${esc(u.owner||u.name||'')}')">Delete</button>
       </div></td>
     </tr>`}).join('');
 }
 
-// CREATE
-function showAdd(){$('nName').value='';$('addMo').classList.add('show');$('nName').focus();}
-async function addUser(){
-  const name=$('nName').value.trim();
-  if(!name)return toast('Name is required',true);
-  const r=await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({name})});
-  if(r.ok){closeMo('addMo');loadUsers();toast('User created');}
+// CREATE USER
+function showAdd(){
+  $('cOwner').value='';$('cBase').value='';$('cLinks').innerHTML='';
+  buildLinkInputs();
+  $('addMo').classList.add('show');$('cOwner').focus();
+}
+
+$('cBase').addEventListener('input', buildLinkInputs);
+
+function buildLinkInputs(){
+  const base=$('cBase').value.trim();
+  const sniList=settings.sniList||[];
+  let html='';
+  for(let i=1;i<=4;i++){
+    const name=base?base+i:'link'+i;
+    html+=`<div class="link-row">
+      <label style="font-size:12px;color:var(--text);font-weight:600">${esc(name)}</label>
+      <select class="link-sni" data-idx="${i}" style="flex:1">
+        ${sniList.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+      </select>
+    </div>`;
+  }
+  $('cLinks').innerHTML=html;
+}
+
+async function createUser(){
+  const owner=$('cOwner').value.trim();
+  const baseName=$('cBase').value.trim();
+  if(!owner)return toast('Owner name is required',true);
+  if(!baseName)return toast('Base name is required',true);
+  const sniSelects=document.querySelectorAll('.link-sni');
+  const links=[];
+  sniSelects.forEach((sel,i)=>{
+    links.push({name:baseName+(i+1), sni:sel.value});
+  });
+  if(!links.length||!links[0].sni)return toast('Please configure SNI for links',true);
+  const r=await fetch('/api/users',{method:'POST',headers:{'Content-Type':'application/json'},body:JSON.stringify({owner,baseName,links})});
+  if(r.ok){closeMo('addMo');loadUsers();toast('User created with '+links.length+' links');}
   else{const d=await r.json();toast(d.error||'Failed',true);}
 }
 
-// TOGGLE
+// VIEW LINKS
+function showLinks(uuid){
+  viewUser=users.find(u=>u.uuid===uuid);
+  if(!viewUser)return;
+  $('linkTitle').textContent=`Links for ${viewUser.owner||viewUser.name}`;
+  const hs=$('lHost');
+  hs.innerHTML=(settings.hostUrls||[]).map(h=>`<option>${esc(h)}</option>`).join('');
+  renderLinks();
+  $('linkMo').classList.add('show');
+}
+
+function renderLinks(){
+  if(!viewUser)return;
+  const host=$('lHost').value;
+  const cdn=settings.cdnAddress||'m.googleapis.com';
+  const links=viewUser.links||[];
+  $('linkList').innerHTML=links.map(l=>{
+    const url=`vless://${viewUser.uuid}@${cdn}:443?path=%2F${viewUser.uuid}&security=tls&encryption=none&host=${host}&type=ws&sni=${l.sni}#${encodeURIComponent(l.name)}`;
+    return`<div class="link-item">
+      <div class="lname">${esc(l.name)} — SNI: ${esc(l.sni)}</div>
+      <div class="lurl">${esc(url)}</div>
+    </div>`;
+  }).join('');
+}
+
+function copyAll(){
+  if(!viewUser)return;
+  const host=$('lHost').value;
+  const cdn=settings.cdnAddress||'m.googleapis.com';
+  const links=(viewUser.links||[]).map(l=>`vless://${viewUser.uuid}@${cdn}:443?path=%2F${viewUser.uuid}&security=tls&encryption=none&host=${host}&type=ws&sni=${l.sni}#${encodeURIComponent(l.name)}`);
+  navigator.clipboard.writeText(links.join('\n')).then(()=>toast('All '+links.length+' links copied!'));
+}
+
+// TOGGLE & DELETE
 async function toggle(id,active){
   await fetch('/api/users/'+id,{method:'PATCH',headers:{'Content-Type':'application/json'},body:JSON.stringify({active})});
   loadUsers();toast(active?'User enabled':'User disabled');
 }
-
-// DELETE
 async function del(id,name){
   if(!confirm('Permanently delete "'+name+'"?'))return;
   const r=await fetch('/api/users/'+id,{method:'DELETE'});
   if(r.ok){loadUsers();toast('User deleted');}
 }
 
-// LINK
-function showLink(uuid,name){
-  linkU=uuid;linkN=name;
-  const ss=$('lSni'),hs=$('lHost');
-  ss.innerHTML=(settings.sniList||[]).map(s=>`<option>${esc(s)}</option>`).join('');
-  hs.innerHTML=(settings.hostUrls||[]).map(h=>`<option>${esc(h)}</option>`).join('');
-  $('lCdn').value=settings.cdnAddress||'m.googleapis.com';
-  genLink();$('linkMo').classList.add('show');
-}
-function genLink(){
-  const cdn=$('lCdn').value,sni=$('lSni').value,host=$('lHost').value;
-  $('lBox').textContent=`vless://${linkU}@${cdn}:443?path=%2F${linkU}&security=tls&encryption=none&host=${host}&type=ws&sni=${sni}#${encodeURIComponent(linkN)}`;
-}
-function copyLink(){navigator.clipboard.writeText($('lBox').textContent).then(()=>toast('Link copied!'));}
-
 // HELPERS
 function $(id){return document.getElementById(id)}
 function closeMo(id){$(id).classList.remove('show');}
 function esc(s){const d=document.createElement('div');d.textContent=s;return d.innerHTML;}
 function toast(m,e){const t=$('toast');t.textContent=m;t.className='toast show '+(e?'err':'ok');setTimeout(()=>t.className='toast',2500);}
-function fmtBytes(b){
-  if(!b||b===0)return '0 B';
-  const u=['B','KB','MB','GB','TB'];
-  const i=Math.floor(Math.log(b)/Math.log(1024));
-  return (b/Math.pow(1024,i)).toFixed(i>0?1:0)+' '+u[i];
-}
+function fmtBytes(b){if(!b||b===0)return '0 B';const u=['B','KB','MB','GB','TB'];const i=Math.floor(Math.log(b)/Math.log(1024));return (b/Math.pow(1024,i)).toFixed(i>0?1:0)+' '+u[i];}
 document.querySelectorAll('.mo').forEach(el=>el.addEventListener('click',e=>{if(e.target===el)el.classList.remove('show')}));
 initDash();
 </script>
