@@ -6,8 +6,6 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
-const grpc = require('@grpc/grpc-js');
-const protoLoader = require('@grpc/proto-loader');
 const httpProxy = require('http-proxy');
 
 const app = express();
@@ -24,9 +22,8 @@ const usersCol = db.collection('xray-users');
 const settingsDoc = db.collection('xray-settings').doc('main');
 
 let xrayProcess = null;
-let prevTraffic = {};
-let statsClient = null;
 let restarting = false;
+const connCount = {}; // uuid -> number of active WS connections
 
 // WebSocket proxy to Xray
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:10000', ws: true });
@@ -42,23 +39,14 @@ function generateConfig(activeUsers) {
 
   const config = {
     log: { loglevel: 'warning' },
-    api: { tag: 'api', services: ['StatsService'] },
-    stats: {},
-    policy: { levels: { '0': { statsUserUplink: true, statsUserDownlink: true } } },
     inbounds: [
-      {
-        tag: 'api', port: 10085, listen: '127.0.0.1',
-        protocol: 'dokodemo-door',
-        settings: { address: '127.0.0.1' }
-      },
       {
         port: 10000, listen: '127.0.0.1', protocol: 'vless',
         settings: { clients, decryption: 'none' },
         streamSettings: { network: 'ws', wsSettings: { path: '/' } }
       }
     ],
-    outbounds: [{ tag: 'direct', protocol: 'freedom' }],
-    routing: { rules: [{ inboundTag: ['api'], outboundTag: 'api', type: 'field' }] }
+    outbounds: [{ tag: 'direct', protocol: 'freedom' }]
   };
 
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
@@ -70,8 +58,6 @@ function startXray() {
   xrayProcess.stdout?.on('data', d => process.stdout.write(d));
   xrayProcess.stderr?.on('data', d => process.stderr.write(d));
   xrayProcess.on('exit', code => console.log('Xray exited:', code));
-  prevTraffic = {};
-  setTimeout(initStatsClient, 2000);
 }
 
 async function restartXray() {
@@ -86,41 +72,7 @@ async function restartXray() {
   finally { restarting = false; }
 }
 
-// ═══════════════════════════════════════
-// STATS (gRPC)
-// ═══════════════════════════════════════
 
-function initStatsClient() {
-  const PROTO = 'syntax="proto3";package xray.app.stats.command;service StatsService{rpc QueryStats(QueryStatsRequest)returns(QueryStatsResponse){}}message QueryStatsRequest{string pattern=1;bool reset=2;}message QueryStatsResponse{repeated Stat stat=1;}message Stat{string name=1;int64 value=2;}';
-  try {
-    fs.writeFileSync('/tmp/stats.proto', PROTO);
-    const pkgDef = protoLoader.loadSync('/tmp/stats.proto', { longs: Number });
-    const proto = grpc.loadPackageDefinition(pkgDef);
-    if (statsClient) try { statsClient.close(); } catch (e) {}
-    statsClient = new proto.xray.app.stats.command.StatsService('127.0.0.1:10085', grpc.credentials.createInsecure());
-  } catch (e) { statsClient = null; }
-}
-
-function getOnlineUsers() {
-  return new Promise(resolve => {
-    if (!statsClient) return resolve([]);
-    const deadline = new Date(Date.now() + 3000);
-    statsClient.QueryStats({ pattern: 'user', reset: false }, { deadline }, (err, res) => {
-      if (err) return resolve([]);
-      const online = new Set(), current = {};
-      for (const s of res?.stat || []) {
-        const m = s.name?.match(/^user>>>(.+?)>>>traffic>>>/);
-        if (m) {
-          const uuid = m[1], val = Number(s.value) || 0;
-          current[s.name] = val;
-          if (prevTraffic[s.name] !== undefined && val > prevTraffic[s.name]) online.add(uuid);
-        }
-      }
-      prevTraffic = current;
-      resolve(Array.from(online));
-    });
-  });
-}
 
 // ═══════════════════════════════════════
 // AUTH
@@ -232,9 +184,13 @@ app.delete('/api/users/:id', auth, async (req, res) => {
 // STATS ENDPOINT
 // ═══════════════════════════════════════
 
-app.get('/api/stats', auth, async (req, res) => {
-  try { res.json({ online: await getOnlineUsers() }); }
-  catch (e) { res.json({ online: [] }); }
+app.get('/api/stats', auth, (req, res) => {
+  // Return map of uuid -> connection count for all connected users
+  const online = {};
+  for (const [uuid, count] of Object.entries(connCount)) {
+    if (count > 0) online[uuid] = count;
+  }
+  res.json({ online });
 });
 
 // ═══════════════════════════════════════
@@ -258,13 +214,32 @@ async function init() {
 
   const server = http.createServer(app);
 
-  // Handle WebSocket upgrades - proxy non-admin paths to Xray
+  // Handle WebSocket upgrades - extract UUID from path, track connections
   server.on('upgrade', (req, socket, head) => {
     const url = req.url || '/';
     if (url.startsWith('/admin') || url.startsWith('/api')) {
       socket.destroy();
       return;
     }
+
+    // Extract UUID from path: /UUID -> track connection
+    const uuid = url.slice(1).split('?')[0]; // remove leading / and query params
+    if (uuid) {
+      connCount[uuid] = (connCount[uuid] || 0) + 1;
+      console.log(`WS connect: ${uuid} (${connCount[uuid]} sessions)`);
+      const cleanup = () => {
+        if (connCount[uuid]) {
+          connCount[uuid]--;
+          if (connCount[uuid] <= 0) delete connCount[uuid];
+        }
+        console.log(`WS disconnect: ${uuid} (${connCount[uuid] || 0} sessions)`);
+      };
+      socket.on('close', cleanup);
+      socket.on('error', cleanup);
+    }
+
+    // Rewrite URL to / for Xray
+    req.url = '/';
     proxy.ws(req, socket, head, {}, (err) => {
       console.error('WS proxy error:', err.message);
       socket.destroy();

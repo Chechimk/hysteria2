@@ -189,7 +189,7 @@ tr:hover td{background:rgba(99,102,241,.03)}
 <div class="toast" id="toast"></div>
 
 <script>
-let users=[],settings={},onlineSet=new Set(),linkU='',linkN='',poll;
+let users=[],settings={},onlineMap={},linkU='',linkN='',poll;
 
 // AUTH
 async function login(){
@@ -212,15 +212,17 @@ async function init(){
 function startPoll(){stopPoll();pollStats();poll=setInterval(pollStats,3000);}
 function stopPoll(){if(poll)clearInterval(poll);}
 async function pollStats(){
-  try{const r=await fetch('/api/stats');if(!r.ok)return;const d=await r.json();onlineSet=new Set(d.online);updateOnline();}catch(e){}
+  try{const r=await fetch('/api/stats');if(!r.ok)return;const d=await r.json();onlineMap=d.online||{};updateOnline();}catch(e){}
 }
 function updateOnline(){
   let cnt=0;
   document.querySelectorAll('[data-uid]').forEach(el=>{
-    const on=onlineSet.has(el.dataset.uid);
+    const uid=el.dataset.uid;
+    const sessions=onlineMap[uid]||0;
+    const on=sessions>0;
     el.querySelector('.dot').className='dot '+(on?'dot-on':'dot-off');
-    el.querySelector('.otxt').textContent=on?'Online':'Offline';
-    if(on)cnt++;
+    el.querySelector('.otxt').textContent=on?sessions+' online':'Offline';
+    if(on)cnt+=sessions;
   });
   $('sO').textContent=cnt;
 }
@@ -260,12 +262,12 @@ async function loadUsers(){
 function renderUsers(){
   if(!users.length){$('tbl').innerHTML='<tr><td colspan="6" class="empty">No users yet. Click "+ New User" to create one.</td></tr>';return;}
   $('tbl').innerHTML=users.map(u=>{
-    const on=onlineSet.has(u.uuid);
+    const sessions=onlineMap[u.uuid]||0;const on=sessions>0;
     return`<tr data-uid="${u.uuid}">
       <td><strong>${esc(u.name)}</strong></td>
       <td><span class="uid">${u.uuid.slice(0,13)}...</span></td>
       <td><span class="badge ${u.active?'badge-on':'badge-off'}">${u.active?'Active':'Disabled'}</span></td>
-      <td><span class="dot ${on?'dot-on':'dot-off'}"></span> <span class="otxt">${on?'Online':'Offline'}</span></td>
+      <td><span class="dot ${on?'dot-on':'dot-off'}"></span> <span class="otxt">${on?sessions+' online':'Offline'}</span></td>
       <td style="color:var(--text3);font-size:11px">${u.createdAt?new Date(u.createdAt).toLocaleDateString():'-'}</td>
       <td><div class="acts">
         ${u.active?`<button class="btn btn-c btn-sm" onclick="showLink('${u.uuid}','${esc(u.name)}')">📋 Link</button>`:''}
@@ -309,7 +311,7 @@ function showLink(uuid,name){
 }
 function genLink(){
   const cdn=$('lCdn').value,sni=$('lSni').value,host=$('lHost').value;
-  $('lBox').textContent=`vless://${linkU}@${cdn}:443?path=%2F&security=tls&encryption=none&host=${host}&type=ws&sni=${sni}#${encodeURIComponent(linkN)}`;
+  $('lBox').textContent=`vless://${linkU}@${cdn}:443?path=%2F${linkU}&security=tls&encryption=none&host=${host}&type=ws&sni=${sni}#${encodeURIComponent(linkN)}`;
 }
 function copyLink(){navigator.clipboard.writeText($('lBox').textContent).then(()=>toast('Link copied!'));}
 
