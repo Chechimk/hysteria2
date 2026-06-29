@@ -162,7 +162,10 @@ tr:hover td{background:rgba(99,102,241,.03)}
   <input type="text" id="cOwner" placeholder="Who owns this account?">
   <label>Base Link Name</label>
   <input type="text" id="cBase" placeholder="e.g. pew (creates pew1, pew2, pew3, pew4)">
-  <label style="margin-top:16px">Assign SNI for each link:</label>
+  <label style="margin-top:16px">Available SNI Domains:</label>
+  <div class="tags" id="cSniTags"></div>
+  <div class="row" style="margin-bottom:14px"><input type="text" id="cNewSni" placeholder="Add new SNI domain" style="margin:0"><button class="btn btn-p btn-sm" onclick="addCreateSni()">+ Add</button></div>
+  <label>Assign SNI for each link:</label>
   <div id="cLinks"></div>
   <div class="mc-foot">
     <button class="btn btn-g" onclick="closeMo('addMo')">Cancel</button>
@@ -301,11 +304,12 @@ function renderUsers(){
 // CREATE USER
 function showAdd(){
   $('cOwner').value='';$('cBase').value='';$('cLinks').innerHTML='';
+  renderCreateSniList();
   buildLinkInputs();
   $('addMo').classList.add('show');$('cOwner').focus();
 }
 
-$('cBase').addEventListener('input', buildLinkInputs);
+$('cBase').addEventListener('input', updateLinkLabels);
 
 function buildLinkInputs(){
   const base=$('cBase').value.trim();
@@ -314,13 +318,39 @@ function buildLinkInputs(){
   for(let i=1;i<=4;i++){
     const name=base?base+i:'link'+i;
     html+=`<div class="link-row">
-      <label style="font-size:12px;color:var(--text);font-weight:600">${esc(name)}</label>
+      <label class="link-label" style="font-size:12px;color:var(--text);font-weight:600;min-width:70px">${esc(name)}</label>
       <select class="link-sni" data-idx="${i}" style="flex:1">
-        ${sniList.map(s=>`<option value="${esc(s)}">${esc(s)}</option>`).join('')}
+        ${sniList.map((s,si)=>`<option value="${esc(s)}"${si===i-1&&sniList.length>1?' selected':''}>${esc(s)}</option>`).join('')}
       </select>
     </div>`;
   }
   $('cLinks').innerHTML=html;
+}
+
+function updateLinkLabels(){
+  const base=$('cBase').value.trim();
+  document.querySelectorAll('.link-label').forEach((el,i)=>{
+    el.textContent=base?(base+(i+1)):('link'+(i+1));
+  });
+}
+
+function renderCreateSniList(){
+  const sniList=settings.sniList||[];
+  $('cSniTags').innerHTML=sniList.map((v,i)=>`<span class="tag">${esc(v)}<button class="x" onclick="rmCreateSni(${i})">✕</button></span>`).join('');
+}
+function addCreateSni(){
+  const v=$('cNewSni').value.trim();if(!v)return;
+  (settings.sniList=settings.sniList||[]).push(v);
+  $('cNewSni').value='';
+  renderCreateSniList();
+  buildLinkInputs();
+  fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)});
+}
+function rmCreateSni(i){
+  settings.sniList.splice(i,1);
+  renderCreateSniList();
+  buildLinkInputs();
+  fetch('/api/settings',{method:'PUT',headers:{'Content-Type':'application/json'},body:JSON.stringify(settings)});
 }
 
 async function createUser(){
