@@ -434,6 +434,7 @@ function renderLinks(){
     return`<div class="link-item">
       <div class="lname">${esc(l.name)} — SNI: ${esc(l.sni)}</div>
       <div class="lurl">${esc(url)}</div>
+      <button class="btn btn-c btn-sm" style="margin-top:6px" onclick="copyOne(this)" data-url="${url.replace(/"/g,'&quot;')}">📋 Copy</button>
     </div>`;
   }).join('');
 }
@@ -444,6 +445,9 @@ function copyAll(){
   const cdn=settings.cdnAddress||'m.googleapis.com';
   const links=(viewUser.links||[]).map(l=>`vless://${viewUser.uuid}@${cdn}:443?path=%2F${viewUser.uuid}&security=tls&encryption=none&host=${host}&type=ws&sni=${l.sni}#${encodeURIComponent(l.name)}`);
   navigator.clipboard.writeText(links.join('\n')).then(()=>toast('All '+links.length+' links copied!'));
+}
+function copyOne(btn){
+  navigator.clipboard.writeText(btn.dataset.url).then(()=>toast('Link copied!'));
 }
 
 // EDIT USER
