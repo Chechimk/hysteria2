@@ -6,6 +6,8 @@ const path = require('path');
 const fs = require('fs');
 const http = require('http');
 const { spawn } = require('child_process');
+const grpc = require('@grpc/grpc-js');
+const protoLoader = require('@grpc/proto-loader');
 const httpProxy = require('http-proxy');
 
 const app = express();
@@ -20,16 +22,25 @@ const XRAY_PATH = '/app/xray';
 const db = new Firestore();
 const usersCol = db.collection('xray-users');
 const settingsDoc = db.collection('xray-settings').doc('main');
+const trafficCol = db.collection('xray-traffic');
 
 let xrayProcess = null;
 let restarting = false;
-const connCount = {}; // uuid -> number of active WS connections
+let statsClient = null;
 
-// WebSocket proxy to Xray
+// Online tracking
+const onlineUsers = new Set();
+const connRef = {};
+
+// Live traffic since container start: uuid -> {up, down}
+const liveTraffic = {};
+// Buffer for periodic Firestore flush
+const trafficBuffer = {};
+
 const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:10000', ws: true });
 
 // ═══════════════════════════════════════
-// XRAY PROCESS MANAGEMENT
+// XRAY CONFIG & PROCESS
 // ═══════════════════════════════════════
 
 function generateConfig(activeUsers) {
@@ -39,16 +50,16 @@ function generateConfig(activeUsers) {
 
   const config = {
     log: { loglevel: 'warning' },
+    api: { tag: 'api', services: ['StatsService'] },
+    stats: {},
+    policy: { levels: { '0': { statsUserUplink: true, statsUserDownlink: true } } },
     inbounds: [
-      {
-        port: 10000, listen: '127.0.0.1', protocol: 'vless',
-        settings: { clients, decryption: 'none' },
-        streamSettings: { network: 'ws', wsSettings: { path: '/' } }
-      }
+      { tag: 'api', port: 10085, listen: '127.0.0.1', protocol: 'dokodemo-door', settings: { address: '127.0.0.1' } },
+      { port: 10000, listen: '127.0.0.1', protocol: 'vless', settings: { clients, decryption: 'none' }, streamSettings: { network: 'ws', wsSettings: { path: '/' } } }
     ],
-    outbounds: [{ tag: 'direct', protocol: 'freedom' }]
+    outbounds: [{ tag: 'direct', protocol: 'freedom' }],
+    routing: { rules: [{ inboundTag: ['api'], outboundTag: 'api', type: 'field' }] }
   };
-
   fs.writeFileSync(CONFIG_PATH, JSON.stringify(config, null, 2));
 }
 
@@ -58,6 +69,7 @@ function startXray() {
   xrayProcess.stdout?.on('data', d => process.stdout.write(d));
   xrayProcess.stderr?.on('data', d => process.stderr.write(d));
   xrayProcess.on('exit', code => console.log('Xray exited:', code));
+  setTimeout(initStatsClient, 2000);
 }
 
 async function restartXray() {
@@ -72,19 +84,60 @@ async function restartXray() {
   finally { restarting = false; }
 }
 
+// ═══════════════════════════════════════
+// TRAFFIC STATS (gRPC)
+// ═══════════════════════════════════════
 
+function initStatsClient() {
+  const PROTO = 'syntax="proto3";package xray.app.stats.command;service StatsService{rpc QueryStats(QueryStatsRequest)returns(QueryStatsResponse){}}message QueryStatsRequest{string pattern=1;bool reset=2;}message QueryStatsResponse{repeated Stat stat=1;}message Stat{string name=1;int64 value=2;}';
+  try {
+    fs.writeFileSync('/tmp/stats.proto', PROTO);
+    const pkgDef = protoLoader.loadSync('/tmp/stats.proto', { longs: Number });
+    const proto = grpc.loadPackageDefinition(pkgDef);
+    if (statsClient) try { statsClient.close(); } catch (e) {}
+    statsClient = new proto.xray.app.stats.command.StatsService('127.0.0.1:10085', grpc.credentials.createInsecure());
+  } catch (e) { statsClient = null; }
+}
+
+function pollTraffic() {
+  if (!statsClient) return;
+  const deadline = new Date(Date.now() + 3000);
+  statsClient.QueryStats({ pattern: 'user', reset: true }, { deadline }, (err, res) => {
+    if (err) return;
+    for (const s of res?.stat || []) {
+      const m = s.name?.match(/^user>>>(.+?)>>>traffic>>>(uplink|downlink)/);
+      if (m) {
+        const uuid = m[1], dir = m[2], val = Number(s.value) || 0;
+        if (val <= 0) continue;
+        if (!liveTraffic[uuid]) liveTraffic[uuid] = { up: 0, down: 0 };
+        if (!trafficBuffer[uuid]) trafficBuffer[uuid] = { up: 0, down: 0 };
+        if (dir === 'uplink') { liveTraffic[uuid].up += val; trafficBuffer[uuid].up += val; }
+        else { liveTraffic[uuid].down += val; trafficBuffer[uuid].down += val; }
+      }
+    }
+  });
+}
+
+async function flushTraffic() {
+  const hour = new Date().toISOString().slice(0, 13).replace('T', '-');
+  const batch = db.batch();
+  let hasData = false;
+  for (const [uuid, data] of Object.entries(trafficBuffer)) {
+    if (data.up === 0 && data.down === 0) continue;
+    hasData = true;
+    const ref = trafficCol.doc(`${uuid}_${hour}`);
+    batch.set(ref, { uuid, hour, up: Firestore.FieldValue.increment(data.up), down: Firestore.FieldValue.increment(data.down) }, { merge: true });
+    trafficBuffer[uuid] = { up: 0, down: 0 };
+  }
+  if (hasData) { try { await batch.commit(); } catch (e) { console.error('Flush error:', e.message); } }
+}
 
 // ═══════════════════════════════════════
 // AUTH
 // ═══════════════════════════════════════
 
-function tokenHash() {
-  return crypto.createHash('sha256').update(ADMIN_PASSWORD + '_xr_salt_9f').digest('hex');
-}
-function auth(req, res, next) {
-  if (req.cookies?.xt === tokenHash()) return next();
-  res.status(401).json({ error: 'Unauthorized' });
-}
+function tokenHash() { return crypto.createHash('sha256').update(ADMIN_PASSWORD + '_xr_salt_9f').digest('hex'); }
+function auth(req, res, next) { if (req.cookies?.xt === tokenHash()) return next(); res.status(401).json({ error: 'Unauthorized' }); }
 
 app.get('/', (req, res) => res.redirect('/admin'));
 app.get('/admin', (req, res) => res.sendFile(path.join(__dirname, 'public', 'index.html')));
@@ -96,11 +149,7 @@ app.post('/api/login', (req, res) => {
   }
   res.status(401).json({ error: 'Wrong password' });
 });
-
-app.post('/api/logout', (req, res) => {
-  res.clearCookie('xt', { path: '/' });
-  res.json({ ok: true });
-});
+app.post('/api/logout', (req, res) => { res.clearCookie('xt', { path: '/' }); res.json({ ok: true }); });
 
 // ═══════════════════════════════════════
 // SETTINGS
@@ -111,17 +160,9 @@ app.get('/api/settings', auth, async (req, res) => {
     const doc = await settingsDoc.get();
     const d = doc.exists ? doc.data() : {};
     const hostUrls = d.hostUrls || [];
-    // Auto-detect current Cloud Run URL and include it
     const currentHost = req.headers['x-forwarded-host'] || req.headers.host || '';
-    if (currentHost && !hostUrls.includes(currentHost)) {
-      hostUrls.unshift(currentHost);
-      await settingsDoc.set({ hostUrls }, { merge: true });
-    }
-    res.json({
-      cdnAddress: d.cdnAddress || 'm.googleapis.com',
-      sniList: d.sniList || ['workspaceblog.google.com'],
-      hostUrls
-    });
+    if (currentHost && !hostUrls.includes(currentHost)) { hostUrls.unshift(currentHost); await settingsDoc.set({ hostUrls }, { merge: true }); }
+    res.json({ cdnAddress: d.cdnAddress || 'm.googleapis.com', sniList: d.sniList || ['workspaceblog.google.com'], hostUrls });
   } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
@@ -181,20 +222,45 @@ app.delete('/api/users/:id', auth, async (req, res) => {
 });
 
 // ═══════════════════════════════════════
-// STATS ENDPOINT
+// STATS + TRAFFIC ENDPOINTS
 // ═══════════════════════════════════════
 
 app.get('/api/stats', auth, (req, res) => {
-  // Return map of uuid -> connection count for all connected users
-  const online = {};
-  for (const [uuid, count] of Object.entries(connCount)) {
-    if (count > 0) online[uuid] = count;
-  }
-  res.json({ online });
+  res.json({ online: Array.from(onlineUsers), traffic: liveTraffic });
+});
+
+app.get('/api/traffic', auth, async (req, res) => {
+  try {
+    const period = req.query.period || 'daily';
+    const now = new Date();
+    let since;
+    switch (period) {
+      case '1h': since = new Date(now - 3600000); break;
+      case '2h': since = new Date(now - 7200000); break;
+      case '3h': since = new Date(now - 10800000); break;
+      case '4h': since = new Date(now - 14400000); break;
+      case '5h': since = new Date(now - 18000000); break;
+      case 'daily': since = new Date(now - 86400000); break;
+      case 'weekly': since = new Date(now - 604800000); break;
+      case 'monthly': since = new Date(now - 2592000000); break;
+      case 'yearly': since = new Date(now - 31536000000); break;
+      default: since = new Date(now - 86400000);
+    }
+    const sinceHour = since.toISOString().slice(0, 13).replace('T', '-');
+    const snap = await trafficCol.where('hour', '>=', sinceHour).get();
+    const result = {};
+    for (const doc of snap.docs) {
+      const d = doc.data();
+      if (!result[d.uuid]) result[d.uuid] = { up: 0, down: 0 };
+      result[d.uuid].up += d.up || 0;
+      result[d.uuid].down += d.down || 0;
+    }
+    res.json({ period, traffic: result });
+  } catch (e) { res.status(500).json({ error: e.message }); }
 });
 
 // ═══════════════════════════════════════
-// HEALTH CHECK
+// HEALTH
 // ═══════════════════════════════════════
 
 app.get('/_ah/health', (req, res) => res.send('OK'));
@@ -207,47 +273,37 @@ app.get('/health', (req, res) => res.send('OK'));
 async function init() {
   try {
     const doc = await settingsDoc.get();
-    if (!doc.exists) {
-      await settingsDoc.set({ cdnAddress: 'm.googleapis.com', sniList: ['workspaceblog.google.com'], hostUrls: [] });
-    }
+    if (!doc.exists) await settingsDoc.set({ cdnAddress: 'm.googleapis.com', sniList: ['workspaceblog.google.com'], hostUrls: [] });
   } catch (e) { console.error('Seed error:', e.message); }
 
   const server = http.createServer(app);
 
-  // Handle WebSocket upgrades - extract UUID from path, track connections
   server.on('upgrade', (req, socket, head) => {
     const url = req.url || '/';
-    if (url.startsWith('/admin') || url.startsWith('/api')) {
-      socket.destroy();
-      return;
-    }
+    if (url.startsWith('/admin') || url.startsWith('/api')) { socket.destroy(); return; }
 
-    // Extract UUID from path: /UUID -> track connection
-    const uuid = url.slice(1).split('?')[0]; // remove leading / and query params
+    const uuid = url.slice(1).split('?')[0];
     if (uuid) {
-      connCount[uuid] = (connCount[uuid] || 0) + 1;
-      console.log(`WS connect: ${uuid} (${connCount[uuid]} sessions)`);
+      connRef[uuid] = (connRef[uuid] || 0) + 1;
+      onlineUsers.add(uuid);
       const cleanup = () => {
-        if (connCount[uuid]) {
-          connCount[uuid]--;
-          if (connCount[uuid] <= 0) delete connCount[uuid];
-        }
-        console.log(`WS disconnect: ${uuid} (${connCount[uuid] || 0} sessions)`);
+        connRef[uuid] = (connRef[uuid] || 1) - 1;
+        if (connRef[uuid] <= 0) { delete connRef[uuid]; onlineUsers.delete(uuid); }
       };
       socket.on('close', cleanup);
       socket.on('error', cleanup);
     }
 
-    // Rewrite URL to / for Xray
     req.url = '/';
-    proxy.ws(req, socket, head, {}, (err) => {
-      console.error('WS proxy error:', err.message);
-      socket.destroy();
-    });
+    proxy.ws(req, socket, head, {}, (err) => { socket.destroy(); });
   });
 
   server.listen(PORT, () => console.log(`Server on :${PORT}`));
   try { await restartXray(); } catch (e) { console.error('Initial Xray start failed:', e.message); }
+
+  // Poll traffic every 5 seconds, flush to Firestore every 60 seconds
+  setInterval(pollTraffic, 5000);
+  setInterval(flushTraffic, 60000);
 }
 
 init();
