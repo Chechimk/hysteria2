@@ -237,7 +237,7 @@ async function initDash(){
 }
 
 // POLL
-function startPoll(){stopPoll();pollStats();poll=setInterval(pollStats,5000);}
+function startPoll(){stopPoll();pollStats();poll=setInterval(pollStats,1000);}
 function stopPoll(){if(poll)clearInterval(poll);}
 async function pollStats(){
   try{

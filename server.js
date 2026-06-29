@@ -33,7 +33,12 @@ const connRef = {};
 const liveTraffic = {};
 const trafficBuffer = {};
 
-const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:10000', ws: true });
+const proxy = httpProxy.createProxyServer({
+  target: 'http://127.0.0.1:10000',
+  ws: true,
+  proxyTimeout: 10000,
+  timeout: 10000
+});
 
 // ═══════════════════════════════════════
 // XRAY CONFIG & PROCESS
@@ -285,20 +290,34 @@ async function init() {
     if (url.startsWith('/admin') || url.startsWith('/api')) { socket.destroy(); return; }
 
     const uuid = url.slice(1).split('?')[0];
+    let cleaned = false;
     if (uuid) {
       connRef[uuid] = (connRef[uuid] || 0) + 1;
       onlineUsers.add(uuid);
       const cleanup = () => {
+        if (cleaned) return;
+        cleaned = true;
         connRef[uuid] = (connRef[uuid] || 1) - 1;
         if (connRef[uuid] <= 0) {
           delete connRef[uuid];
           onlineUsers.delete(uuid);
-          // Reset live session traffic when user fully disconnects
           delete liveTraffic[uuid];
         }
       };
       socket.on('close', cleanup);
       socket.on('error', cleanup);
+      socket.on('end', cleanup);
+      // Detect dead connections: if no data for 15s, clean up
+      let lastActivity = Date.now();
+      socket.on('data', () => { lastActivity = Date.now(); });
+      const deadCheck = setInterval(() => {
+        if (Date.now() - lastActivity > 15000) {
+          clearInterval(deadCheck);
+          cleanup();
+          socket.destroy();
+        }
+        if (cleaned) clearInterval(deadCheck);
+      }, 3000);
     }
 
     req.url = '/';
@@ -308,7 +327,7 @@ async function init() {
   server.listen(PORT, () => console.log(`Server on :${PORT}`));
   try { await restartXray(); } catch (e) { console.error('Initial Xray start failed:', e.message); }
 
-  setInterval(pollTraffic, 5000);
+  setInterval(pollTraffic, 1000);
   setInterval(flushTraffic, 60000);
 }
 
