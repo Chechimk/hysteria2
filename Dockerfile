@@ -1,8 +1,7 @@
 FROM node:20-alpine
 WORKDIR /app
 
-RUN apk add --no-cache nginx wget unzip && \
-    mkdir -p /run/nginx && \
+RUN apk add --no-cache wget unzip && \
     wget https://github.com/XTLS/Xray-core/releases/latest/download/Xray-linux-64.zip -O /tmp/xray.zip && \
     unzip /tmp/xray.zip -d /app && \
     chmod +x /app/xray && \
@@ -11,10 +10,6 @@ RUN apk add --no-cache nginx wget unzip && \
 COPY package*.json ./
 RUN npm ci --omit=dev
 COPY . .
-COPY nginx.conf /etc/nginx/http.d/default.conf
-RUN rm -f /etc/nginx/http.d/alpine-default.conf
-
-RUN printf '#!/bin/sh\nnginx -g "daemon on;" 2>&1\nsleep 1\nexec node /app/server.js\n' > /app/start.sh && chmod +x /app/start.sh
 
 EXPOSE 8080
-ENTRYPOINT ["/app/start.sh"]
+CMD ["node", "server.js"]

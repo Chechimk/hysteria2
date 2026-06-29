@@ -4,15 +4,17 @@ const crypto = require('crypto');
 const cookieParser = require('cookie-parser');
 const path = require('path');
 const fs = require('fs');
+const http = require('http');
 const { spawn } = require('child_process');
 const grpc = require('@grpc/grpc-js');
 const protoLoader = require('@grpc/proto-loader');
+const httpProxy = require('http-proxy');
 
 const app = express();
 app.use(express.json());
 app.use(cookieParser());
 
-const PORT = 3000;
+const PORT = process.env.PORT || 8080;
 const ADMIN_PASSWORD = process.env.ADMIN_PASSWORD || 'admin';
 const CONFIG_PATH = '/tmp/xray-config.json';
 const XRAY_PATH = '/app/xray';
@@ -25,6 +27,9 @@ let xrayProcess = null;
 let prevTraffic = {};
 let statsClient = null;
 let restarting = false;
+
+// WebSocket proxy to Xray
+const proxy = httpProxy.createProxyServer({ target: 'http://127.0.0.1:10000', ws: true });
 
 // ═══════════════════════════════════════
 // XRAY PROCESS MANAGEMENT
@@ -232,6 +237,13 @@ app.get('/api/stats', auth, async (req, res) => {
 });
 
 // ═══════════════════════════════════════
+// HEALTH CHECK
+// ═══════════════════════════════════════
+
+app.get('/_ah/health', (req, res) => res.send('OK'));
+app.get('/health', (req, res) => res.send('OK'));
+
+// ═══════════════════════════════════════
 // INIT
 // ═══════════════════════════════════════
 
@@ -243,7 +255,22 @@ async function init() {
     }
   } catch (e) { console.error('Seed error:', e.message); }
 
-  app.listen(PORT, () => console.log(`Admin panel on :${PORT}`));
+  const server = http.createServer(app);
+
+  // Handle WebSocket upgrades - proxy non-admin paths to Xray
+  server.on('upgrade', (req, socket, head) => {
+    const url = req.url || '/';
+    if (url.startsWith('/admin') || url.startsWith('/api')) {
+      socket.destroy();
+      return;
+    }
+    proxy.ws(req, socket, head, {}, (err) => {
+      console.error('WS proxy error:', err.message);
+      socket.destroy();
+    });
+  });
+
+  server.listen(PORT, () => console.log(`Server on :${PORT}`));
   try { await restartXray(); } catch (e) { console.error('Initial Xray start failed:', e.message); }
 }
 
